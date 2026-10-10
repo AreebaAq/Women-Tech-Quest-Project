@@ -61,8 +61,11 @@ English. Everything that must be exact (the guide's rules, arithmetic, counting)
    failed checks as feedback (readings vs units, lines vs subtotals, charges + taxes vs current bill), and each
    field is decided by majority vote.
 4. **Answer:** code precomputes the common numbers (averages, comparisons, percentages, cost per unit,
-   late-payment difference). For anything else the model must call tools: `calculate` (exact arithmetic) and
-   `history_months` (exact month filtering and counting). Answers are grounded only in the bill, and estimates
+   late-payment schedule by days late, payment status per month). For anything else the model must call tools:
+   `calculate` (exact arithmetic), `date_math` (exact dates) and
+   `history_months` (exact month filtering and counting). Final answers are handed in through a `submit_answers`
+   tool and matched to questions by their text, so an answer can never land on the wrong row. Answers are grounded
+   only in the bill, and estimates
    are labelled with the method used.
 5. **Reliability:** requests respect the 15 requests/minute limit, temporary errors are retried, and a bill
    or question that fails still gets a valid row, so no CSV cell is ever empty.
