@@ -6,6 +6,10 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
+# source/ is built from committed files, so uncommitted code changes would be left out.
+$dirty = git status --porcelain -- . ':!output' ':!data' ':!submission.zip'
+if ($dirty) { throw "Commit your changes first, otherwise they won't be in source/:`n$($dirty -join "`n")" }
+
 $stage = Join-Path $env:TEMP "wtq-submission"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force "$stage\output", "$stage\source" | Out-Null
