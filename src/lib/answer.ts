@@ -26,6 +26,34 @@ const CALCULATE: FunctionDeclaration = {
   },
 };
 
+const HISTORY_MONTHS: FunctionDeclaration = {
+  name: "history_months",
+  description:
+    "Filters the bill's monthly usage history exactly and returns the matching months, their units and the count. " +
+    "Use it for every question that counts or lists months (above/below a number of units, highest/lowest N, etc.).",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      above: { type: Type.NUMBER, description: "Only months with units strictly greater than this" },
+      below: { type: Type.NUMBER, description: "Only months with units strictly less than this" },
+      include_current: { type: Type.BOOLEAN, description: "Also consider the current bill month" },
+    },
+  },
+};
+
+function historyMonths(bill: DecodedBill, args: Record<string, unknown> = {}) {
+  const months = bill.facts.usage_history
+    .filter((h): h is { month: string; units: number } => h.units !== null)
+    .map((h) => ({ month: h.month, units: h.units }));
+  if (args.include_current && bill.level1.units_consumed !== null) {
+    months.push({ month: `${bill.level1.bill_month ?? "current"} (current month)`, units: bill.level1.units_consumed });
+  }
+  const above = typeof args.above === "number" ? args.above : null;
+  const below = typeof args.below === "number" ? args.below : null;
+  const matches = months.filter((m) => (above === null || m.units > above) && (below === null || m.units < below));
+  return { months_considered: months.length, count: matches.length, matches };
+}
+
 function calculate(expressions: unknown) {
   const list = Array.isArray(expressions) ? expressions : [expressions];
   return list.map((expr) => {
@@ -42,7 +70,7 @@ const ANSWER_RULES = `You are a helpful assistant explaining a customer's Pakist
 You get the data read from ONE bill (BILL DATA), numbers already calculated from it (PRECOMPUTED), and the customer's questions.
 
 Rules for every answer:
-- Get the numbers right. Use PRECOMPUTED values when they fit. For any other calculation call the calculate tool. Never do arithmetic in your head.
+- Get the numbers right. Use PRECOMPUTED values when they fit. For any other calculation call the calculate tool. For counting or listing months by usage call the history_months tool. Never do arithmetic or counting in your head.
 - Ground every answer in this bill only. Never use outside tariff rates, slab prices or amounts. If the bill does not show a needed value, say clearly that the bill does not show it, instead of guessing.
 - You may explain what a bill term means in general words, then give this bill's figure. E.g. FPA/FCA = fuel price (cost) adjustment, a charge or credit for the difference between the expected and actual fuel cost of generating electricity in an earlier month; QTA = quarterly tariff adjustment; arrears = unpaid amount carried from earlier bills (negative = credit); LP surcharge = late payment surcharge; sanctioned load = the maximum load approved for the connection.
 - Negative units in the history (net metering connections) mean more electricity was exported to the grid than imported that month. Say so when they affect an answer, and for counts/averages state how negative months were treated.
@@ -88,7 +116,7 @@ export async function answerQuestions(bill: DecodedBill, questions: Question[]):
     const lastRound = round === MAX_TOOL_ROUNDS;
     // On the last round the tool stays declared (the history contains calls) but is switched off.
     const response = await generate(contents, {
-      tools: [{ functionDeclarations: [CALCULATE] }],
+      tools: [{ functionDeclarations: [CALCULATE, HISTORY_MONTHS] }],
       ...(lastRound && { toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.NONE } } }),
     });
     const calls = response.functionCalls ?? [];
@@ -100,7 +128,14 @@ export async function answerQuestions(bill: DecodedBill, questions: Question[]):
     contents.push({
       role: "user",
       parts: calls.map((c) => ({
-        functionResponse: { id: c.id, name: c.name, response: { results: calculate(c.args?.expressions) } },
+        functionResponse: {
+          id: c.id,
+          name: c.name,
+          response:
+            c.name === "history_months"
+              ? historyMonths(bill, c.args)
+              : { results: calculate(c.args?.expressions) },
+        },
       })),
     });
   }
