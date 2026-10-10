@@ -22,6 +22,53 @@ function sumBy<T>(items: T[], key: (t: T) => string, val: (t: T) => number) {
   return out;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+/** Last date printed in a late-payment label: "Upto 14/09/26", "Till 22-Apr-24-Apr", "After 12-OCT-26". */
+function labelDate(label: string, year: number): number | null {
+  const numeric = [...label.matchAll(/(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/g)].at(-1);
+  if (numeric) {
+    const y = Number(numeric[3]) < 100 ? 2000 + Number(numeric[3]) : Number(numeric[3]);
+    return Date.UTC(y, Number(numeric[2]) - 1, Number(numeric[1]));
+  }
+  const named = [...label.matchAll(/(\d{1,2})[\s-]*([A-Za-z]{3})[a-z]*(?:[\s-]*(\d{2,4})(?!\d*-?[A-Za-z]))?/g)].at(-1);
+  if (named) {
+    const m = MONTHS.indexOf(named[2].toLowerCase());
+    if (m < 0) return null;
+    const y = named[3] ? (Number(named[3]) < 100 ? 2000 + Number(named[3]) : Number(named[3])) : year;
+    return Date.UTC(y, m, Number(named[1]));
+  }
+  return null;
+}
+
+/** Turns the printed late-payment labels into explicit date ranges after the due date. */
+function lateSchedule(f: BillFacts, dueDate: string | null) {
+  if (!dueDate) return null;
+  const due = Date.parse(`${dueDate}T00:00:00Z`);
+  const year = new Date(due).getUTCFullYear();
+  const day = 86_400_000;
+  const bands = f.late_payment_amounts
+    .filter((a) => a.amount !== null)
+    .map((a) => ({ label: a.label, amount: a.amount!, date: labelDate(a.label, year), after: /after/i.test(a.label) }))
+    .sort((a, b) => (a.date ?? Infinity) - (b.date ?? Infinity) || Number(a.after) - Number(b.after));
+  if (!bands.length || bands.some((b) => b.date === null)) return null;
+  let from = due + day;
+  return bands.map((b) => {
+    const start = b.after ? b.date! + day : from;
+    const range = b.after ? { from: iso(start), to: "onwards" } : { from: iso(start), to: iso(b.date!) };
+    const lateFrom = Math.round((start - due) / day);
+    const lateTo = b.after ? null : Math.round((b.date! - due) / day);
+    if (!b.after) from = b.date! + day;
+    return {
+      printed_label: b.label,
+      pay_between: `${range.from} to ${range.to}`,
+      days_late: lateTo === null ? `${lateFrom} or more days late` : `${lateFrom} to ${lateTo} days late`,
+      amount: b.amount,
+    };
+  });
+}
+
 export function computeStats(l1: Level1, f: BillFacts) {
   const units = l1.units_consumed;
   const hist = f.usage_history.filter((h): h is { month: string; units: number } => h.units !== null);
@@ -86,7 +133,24 @@ export function computeStats(l1: Level1, f: BillFacts) {
       late_payment_extra_percent:
         l1.payable_after_due_date !== null && l1.payable_within_due_date ? pct(l1.payable_after_due_date - l1.payable_within_due_date, l1.payable_within_due_date) : null,
       all_late_payment_amounts: f.late_payment_amounts,
+      late_payment_schedule: lateSchedule(f, l1.due_date),
     },
+    billing_history_check: f.billing_history.map((b) => ({
+      month: monthName(b.month),
+      billed: b.billed_amount,
+      paid: b.payment_amount,
+      payment_date: b.payment_date,
+      status:
+        b.payment_amount === null || b.payment_amount === 0
+          ? "no payment shown"
+          : b.billed_amount === null
+            ? "payment shown, billed amount not shown"
+            : Math.abs(b.payment_amount - b.billed_amount) <= 1
+              ? "paid in full"
+              : b.payment_amount > b.billed_amount
+                ? `overpaid by ${r2(b.payment_amount - b.billed_amount)}`
+                : `underpaid by ${r2(b.billed_amount - b.payment_amount)}`,
+    })),
     dates: {
       days_from_issue_to_due: daysBetween(l1.issue_date, l1.due_date),
       days_from_reading_to_due: daysBetween(l1.reading_date, l1.due_date),

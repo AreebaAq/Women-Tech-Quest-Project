@@ -17,7 +17,7 @@ import type { DecodedBill } from "../src/lib/types";
 
 const IMAGE_EXT = [".png", ".jpg", ".jpeg", ".webp"];
 const FALLBACK_ANSWER =
-  "Sorry, this bill could not be read reliably enough to answer this question, so no figure is given rather than guessing.";
+  "Sorry, an answer could not be generated for this question from this bill, so no figure is given rather than guessing.";
 
 function arg(name: string, fallback?: string) {
   const i = process.argv.indexOf(`--${name}`);
@@ -89,25 +89,34 @@ async function getDecoded(billId: string): Promise<DecodedBill> {
 
 async function getAnswers(bill: DecodedBill, questions: Question[]): Promise<Map<string, string>> {
   const cacheFile = path.join(cacheDir, `${bill.billId}.answers.json`);
-  const cached = readCache<{ question: string; question_id: string; answer: string }[]>(cacheFile);
-  if (cached && questions.every((q) => cached.some((c) => c.question_id === q.question_id && c.question === q.question && c.answer))) {
-    return new Map(cached.map((c) => [c.question_id, c.answer]));
+  const cached = readCache<(Question & { answer: string })[]>(cacheFile) ?? [];
+  const answers = new Map<string, string>();
+  // Keep cached answers for unchanged questions; only ask what is missing.
+  for (const q of questions) {
+    const hit = cached.find((c) => c.question_id === q.question_id && c.question === q.question && c.answer);
+    if (hit) answers.set(q.question_id, hit.answer);
   }
-  if (!bill.facts) return new Map();
-  try {
-    const answers = await answerQuestions(bill, questions);
-    const missing = questions.filter((q) => !answers.has(q.question_id));
-    if (missing.length) {
-      // One follow-up call for any question the model skipped.
-      console.warn(`  ${bill.billId}: ${missing.length} answers missing, asking again`);
-      for (const [id, a] of await answerQuestions(bill, missing)) answers.set(id, a);
+  if (!bill.facts) return answers;
+
+  const missing = () => questions.filter((q) => !answers.has(q.question_id));
+  const attempt = async (qs: Question[], label: string) => {
+    try {
+      for (const [id, a] of await answerQuestions(bill, qs)) answers.set(id, a);
+    } catch (err) {
+      console.warn(`  ${bill.billId}: ${label} failed: ${(err as Error).message.slice(0, 150)}`);
     }
-    fs.writeFileSync(cacheFile, JSON.stringify(questions.map((q) => ({ ...q, answer: answers.get(q.question_id) ?? "" })), null, 2));
-    return answers;
-  } catch (err) {
-    console.error(`  ${bill.billId}: answering failed: ${(err as Error).message}`);
-    return new Map();
+  };
+
+  // All questions together, then the missing ones again, then one at a time as a last resort.
+  if (missing().length) await attempt(missing(), "answering");
+  if (missing().length) {
+    console.warn(`  ${bill.billId}: ${missing().length} answers missing, asking again`);
+    await attempt(missing(), "second attempt");
   }
+  for (const q of missing()) await attempt([q], `question ${q.question_id}`);
+
+  fs.writeFileSync(cacheFile, JSON.stringify(questions.map((q) => ({ ...q, answer: answers.get(q.question_id) ?? "" })), null, 2));
+  return answers;
 }
 
 async function main() {

@@ -131,3 +131,20 @@ test("stats: tax share and late payment difference", () => {
   assert.equal(s.money.late_payment_extra, 286);
   assert.equal(s.dates.days_from_issue_to_due, 14);
 });
+
+test("late payment schedule turns printed labels into date ranges", () => {
+  const ke = computeStats(toLevel1("KESC_0008", kesc0008), kesc0008).money.late_payment_schedule;
+  assert.deepEqual(ke?.map((b) => [b.pay_between, b.days_late, b.amount]), [
+    ["2026-04-22 to 2026-04-24", "1 to 3 days late", 3574],
+    ["2026-04-25 to onwards", "4 or more days late", 3716],
+  ]);
+  const lesco = facts({
+    due_date: "2026-09-09",
+    late_payment_amounts: [{ label: "Upto 14/09/26", amount: 45088 }, { label: "After 14/09/26", amount: 45263 }],
+  });
+  const sched = computeStats(toLevel1("LESCO_0006", lesco), lesco).money.late_payment_schedule;
+  assert.deepEqual(sched?.map((b) => [b.pay_between, b.amount]), [
+    ["2026-09-10 to 2026-09-14", 45088],
+    ["2026-09-15 to onwards", 45263],
+  ]);
+});

@@ -54,6 +54,59 @@ function historyMonths(bill: DecodedBill, args: Record<string, unknown> = {}) {
   return { months_considered: months.length, count: matches.length, matches };
 }
 
+const DATE_MATH: FunctionDeclaration = {
+  name: "date_math",
+  description:
+    "Exact date arithmetic. Give a start date (YYYY-MM-DD) and either a number of days to add (negative to subtract) " +
+    "or an end date to count days to. Use it for any question about paying on/after a date or days between dates.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      start: { type: Type.STRING, description: "YYYY-MM-DD" },
+      add_days: { type: Type.NUMBER },
+      end: { type: Type.STRING, description: "YYYY-MM-DD" },
+    },
+    required: ["start"],
+  },
+};
+
+function dateMath(args: Record<string, unknown> = {}) {
+  const start = Date.parse(`${args.start}T00:00:00Z`);
+  if (Number.isNaN(start)) return { error: "start must be YYYY-MM-DD" };
+  const fmt = (ms: number) => {
+    const d = new Date(ms);
+    return { date: d.toISOString().slice(0, 10), weekday: d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }) };
+  };
+  if (typeof args.add_days === "number") return fmt(start + args.add_days * 86_400_000);
+  const end = Date.parse(`${args.end}T00:00:00Z`);
+  if (Number.isNaN(end)) return { error: "give add_days or an end date (YYYY-MM-DD)" };
+  return { days: Math.round((end - start) / 86_400_000) };
+}
+
+const SUBMIT_ANSWERS: FunctionDeclaration = {
+  name: "submit_answers",
+  description: "Hand in the final answers, one per question, once all numbers are known. Call this exactly once.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      answers: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            question_id: { type: Type.STRING },
+            question: { type: Type.STRING, description: "The question text, copied exactly" },
+            answer: { type: Type.STRING },
+          },
+          required: ["question_id", "question", "answer"],
+          propertyOrdering: ["question_id", "question", "answer"],
+        },
+      },
+    },
+    required: ["answers"],
+  },
+};
+
 function calculate(expressions: unknown) {
   const list = Array.isArray(expressions) ? expressions : [expressions];
   return list.map((expr) => {
@@ -70,7 +123,7 @@ const ANSWER_RULES = `You are a helpful assistant explaining a customer's Pakist
 You get the data read from ONE bill (BILL DATA), numbers already calculated from it (PRECOMPUTED), and the customer's questions.
 
 Rules for every answer:
-- Get the numbers right. Use PRECOMPUTED values when they fit. For any other calculation call the calculate tool. For counting or listing months by usage call the history_months tool. Never do arithmetic or counting in your head.
+- Get the numbers right. Use PRECOMPUTED values when they fit. For any other calculation call the calculate tool. For counting or listing months by usage call the history_months tool. For dates (e.g. "if I pay 5 days late") call date_math, then use PRECOMPUTED.money.late_payment_schedule: it gives the exact date range and the number of days late covered by each late amount (e.g. "5 days late" falls in "4 or more days late"). Give the single amount that applies. Never do arithmetic, counting or date maths in your head.
 - Ground every answer in this bill only. Never use outside tariff rates, slab prices or amounts. If the bill does not show a needed value, say clearly that the bill does not show it, instead of guessing.
 - You may explain what a bill term means in general words, then give this bill's figure. E.g. FPA/FCA = fuel price (cost) adjustment, a charge or credit for the difference between the expected and actual fuel cost of generating electricity in an earlier month; QTA = quarterly tariff adjustment; arrears = unpaid amount carried from earlier bills (negative = credit); LP surcharge = late payment surcharge; sanctioned load = the maximum load approved for the connection.
 - Negative units in the history (net metering connections) mean more electricity was exported to the grid than imported that month. Say so when they affect an answer, and for counts/averages state how negative months were treated.
@@ -80,6 +133,9 @@ Rules for every answer:
 - Be specific: quote the exact PKR amounts, units, months and dates from the bill. Write amounts like "PKR 3,430.24".
 - Never mention names, addresses, CNIC, account, reference, consumer or meter numbers.
 - Answer in English, 1-4 sentences, even if the bill is partly in Urdu. No markdown.
+- Do not speculate about why something is missing from the bill; just say the bill does not show it.
+- Never mention data field names, JSON, null, "PRECOMPUTED" or tools. Write as if you read the bill yourself.
+- For payment-history questions use PRECOMPUTED.billing_history_check: paid more than billed is an overpayment, not a partial payment.
 
 Example answers (another bill):
 Q: How much of my bill is taxes?
@@ -87,41 +143,72 @@ A: Taxes and duties total PKR 569.62 out of your current bill of PKR 3,430.24, o
 Q: How many months in my history went above 200 units?
 A: Two of the 12 previous months exceeded 200 units: July 2025 (239) and August 2025 (203). The current month used 151 units, so the count is two whether or not the current month is included.
 
-When you have all the numbers, reply with only this JSON:
-{"answers":[{"question_id":"Q1","answer":"..."}, ...]} with one entry per question, in the same order.`;
+When you have all the numbers, call submit_answers once with one answer per question, in the same order.`;
 
 /** Bill data for the prompt, without the model's raw notes on hard-to-read areas. */
+// Missing values are shown as text, so answers never talk about "null".
+const NOT_SHOWN = "not shown on the bill";
+const readable = <T,>(v: T): T => JSON.parse(JSON.stringify(v, (_k, x) => (x === null ? NOT_SHOWN : x)));
+
 function billData(bill: DecodedBill) {
   const { lines, usage_history, billing_history, late_payment_amounts, other_details } = bill.facts;
-  return {
+  return readable({
     level1: bill.level1,
     printed_lines: lines.filter((l) => l.amount !== null && l.amount !== 0),
     usage_history_oldest_first: usage_history,
     billing_history,
     late_payment_amounts,
     other_details,
-  };
+  });
 }
 
 export async function answerQuestions(bill: DecodedBill, questions: Question[]): Promise<Map<string, string>> {
   const stats = computeStats(bill.level1, bill.facts);
   const prompt =
-    `${ANSWER_RULES}\n\nBILL DATA:\n${JSON.stringify(billData(bill))}\n\nPRECOMPUTED:\n${JSON.stringify(stats)}\n\n` +
+    `${ANSWER_RULES}\n\nBILL DATA:\n${JSON.stringify(billData(bill))}\n\nPRECOMPUTED:\n${JSON.stringify(readable(stats))}\n\n` +
     `QUESTIONS:\n${questions.map((q) => `${q.question_id}: ${q.question}`).join("\n")}`;
 
   const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
-  let text: string | undefined;
+  const answers = new Map<string, string>();
+  // Answers are matched to questions by the echoed question text, so a shifted
+  // question_id can never put an answer on the wrong row.
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const byText = new Map(questions.map((q) => [norm(q.question), q.question_id]));
+  const ids = new Set(questions.map((q) => q.question_id));
+  const collect = (args: unknown) => {
+    const list = (args as { answers?: { question_id?: unknown; question?: unknown; answer?: unknown }[] })?.answers ?? [];
+    for (const a of list) {
+      if (typeof a?.answer !== "string" || !a.answer.trim()) continue;
+      const idFromText = typeof a.question === "string" ? byText.get(norm(a.question)) : undefined;
+      const id = idFromText ?? (typeof a.question_id === "string" && ids.has(a.question_id.trim()) ? a.question_id.trim() : undefined);
+      if (id && !answers.has(id)) answers.set(id, a.answer.trim());
+    }
+  };
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+    // On the last round the model must hand in its answers.
     const lastRound = round === MAX_TOOL_ROUNDS;
-    // On the last round the tool stays declared (the history contains calls) but is switched off.
     const response = await generate(contents, {
-      tools: [{ functionDeclarations: [CALCULATE, HISTORY_MONTHS] }],
-      ...(lastRound && { toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.NONE } } }),
+      tools: [{ functionDeclarations: [CALCULATE, HISTORY_MONTHS, DATE_MATH, SUBMIT_ANSWERS] }],
+      toolConfig: {
+        functionCallingConfig: lastRound
+          ? { mode: FunctionCallingConfigMode.ANY, allowedFunctionNames: ["submit_answers"] }
+          : { mode: FunctionCallingConfigMode.AUTO },
+      },
     });
     const calls = response.functionCalls ?? [];
-    if (!calls.length || lastRound) {
-      text = response.text;
+    const submit = calls.find((c) => c.name === "submit_answers");
+    if (submit) {
+      collect(submit.args);
+      break;
+    }
+    if (!calls.length) {
+      // The model answered in text instead of calling submit_answers: accept it if it is valid JSON.
+      try {
+        collect(parseJson(response.text));
+      } catch {
+        // Nothing usable; the caller re-asks for missing answers.
+      }
       break;
     }
     contents.push(response.candidates?.[0]?.content ?? { role: "model", parts: calls.map((c) => ({ functionCall: c })) });
@@ -134,16 +221,12 @@ export async function answerQuestions(bill: DecodedBill, questions: Question[]):
           response:
             c.name === "history_months"
               ? historyMonths(bill, c.args)
-              : { results: calculate(c.args?.expressions) },
+              : c.name === "date_math"
+                ? dateMath(c.args)
+                : { results: calculate(c.args?.expressions) },
         },
       })),
     });
-  }
-
-  const parsed = parseJson<{ answers?: { question_id: string; answer: string }[] }>(text);
-  const answers = new Map<string, string>();
-  for (const a of parsed.answers ?? []) {
-    if (a?.question_id && typeof a.answer === "string" && a.answer.trim()) answers.set(a.question_id.trim(), a.answer.trim());
   }
   return answers;
 }
