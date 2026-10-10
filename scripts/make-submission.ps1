@@ -20,8 +20,11 @@ foreach ($f in "level1.csv", "level2.csv") {
 }
 
 # source/: only files tracked by git, so .env, node_modules and caches can never slip in.
-# Bill images are left out to keep the ZIP small.
-git ls-files | Where-Object { $_ -notmatch '^data/.*\.(png|jpe?g|webp)$' -and $_ -notmatch '^output/' } | ForEach-Object {
+# Bill images, test/training templates, our own checking files and AGENTS.md are left out.
+git ls-files | Where-Object {
+    $_ -notmatch '^data/.*\.(png|jpe?g|webp)$' -and $_ -notmatch '^output/' -and
+    $_ -notmatch '^data/(test|test_expected|train)/' -and $_ -ne 'AGENTS.md'
+} | ForEach-Object {
     $dest = Join-Path "$stage\source" $_
     New-Item -ItemType Directory -Force (Split-Path $dest -Parent) | Out-Null
     Copy-Item $_ $dest

@@ -74,7 +74,7 @@ English. Everything that must be exact (the guide's rules, arithmetic, counting)
 
 ```
 npm test                                                         # unit tests for the code rules
-npm run compare -- output/train/level1.csv data/sample/expected  # score Level 1 against expected JSON
+npm run compare -- <level1.csv> data/sample/expected            # score Level 1 against expected JSON
 ```
 
 On the five training bills: **90/90 Level 1 fields correct**.
