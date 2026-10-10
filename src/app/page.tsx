@@ -148,7 +148,7 @@ export default function Home() {
               <div className="space-y-4" aria-label="Reading the bill">
                 <div className="grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)}</div>
                 <div className="skeleton h-72" />
-                <p className="text-center text-sm opacity-55">Reading the bill twice and cross-checking the totals. This takes about 15–30 seconds.</p>
+                <p className="text-center text-sm opacity-55">Reading your bill. This usually takes 10–20 seconds.</p>
               </div>
             )}
 
