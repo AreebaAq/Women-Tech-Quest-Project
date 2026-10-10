@@ -31,19 +31,19 @@ function monthLabel(ym: string | null) {
 
 function KeyFigures({ l1 }: { l1: Level1 }) {
   const tiles = [
-    { label: "Payable by due date", value: pkr(l1.payable_within_due_date), sub: l1.due_date ? `Due ${l1.due_date}` : "Due date not shown", accent: true },
-    { label: "Units consumed", value: show(l1.units_consumed), sub: monthLabel(l1.bill_month) },
-    { label: "This month's bill", value: pkr(l1.current_bill), sub: l1.payable_after_due_date !== null ? `${pkr(l1.payable_after_due_date)} after due date` : "No late amount shown" },
+    { label: "Amount due", value: pkr(l1.payable_within_due_date), sub: l1.due_date ? `Due ${l1.due_date}` : "Due date not shown", accent: true },
+    { label: "Units used", value: show(l1.units_consumed), sub: monthLabel(l1.bill_month) },
+    { label: "Current bill", value: pkr(l1.current_bill), sub: l1.payable_after_due_date !== null ? `${pkr(l1.payable_after_due_date)} after due date` : "No late amount shown" },
   ];
   return (
-    <div className="grid gap-3 sm:grid-cols-3">
+    <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
       {tiles.map((t) => (
         <div
           key={t.label}
           className={`rounded-2xl p-4 ${t.accent ? "bg-violet-700 text-white shadow-lg shadow-violet-700/20" : "border border-black/8 bg-white dark:border-white/10 dark:bg-white/5"}`}
         >
-          <p className={`text-xs font-medium uppercase tracking-wide ${t.accent ? "text-violet-200" : "opacity-55"}`}>{t.label}</p>
-          <p className="mt-1 text-2xl font-bold tabular-nums">{t.value}</p>
+          <p className={`truncate text-xs font-medium uppercase tracking-wide ${t.accent ? "text-violet-200" : "opacity-55"}`} title={t.label}>{t.label}</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold tabular-nums 2xl:text-2xl">{t.value}</p>
           <p className={`mt-0.5 text-xs ${t.accent ? "text-violet-200" : "opacity-55"}`}>{t.sub}</p>
         </div>
       ))}
