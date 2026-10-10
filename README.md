@@ -50,32 +50,43 @@ Upload a bill, click **Decode bill** to see the Level 1 fields (summary or raw J
 ## How it works
 
 ```
-bill image ──► Gemini (vision, JSON schema) ──► code: clean + check ──► Level 1 JSON
-                                                       │
-                       questions ──► Gemini + calculate tool + precomputed stats ──► Level 2 answers
+bill image ──► Gemini read ×2 (vision, JSON schema) ──► code: rules + checks ──► agree? ──► Level 1 JSON
+                                                                │ no
+                                                                └► 3rd read with failed checks ──► per-field vote
+questions ──► Gemini + tools (calculate, history_months) + precomputed stats ──► Level 2 answers
 ```
 
 1. **Read** (`src/lib/extract.ts`): the bill image is sent to Gemini at high media resolution with a strict
-   JSON response schema. The model transcribes every printed charge and tax line (label, section, type,
-   amount), the dates, readings, totals, late-payment amounts, usage history and billing history.
-2. **Apply the rules in code** (`toLevel1`): provider comes from the file name (KESC → KE), lines printed as 0
-   are dropped, subsidies are made negative, unknown types fall back to `other` / `other_tax`,
-   `payable_after_due_date` is the highest late-payment amount, dates and numbers are validated
-   (invalid → `null`), and the fields are output in the exact order of the guide.
-3. **Self-check** (`checkConsistency`): code verifies readings vs units, charge lines vs `total_charges`,
-   tax lines vs `total_taxes`, and charges + taxes vs `current_bill`. If a check fails, the model re-reads
-   the bill once with the failed checks as feedback, and the reading that passes more checks is kept.
+   JSON response schema. The model only transcribes: every printed charge and tax line (label, section, type,
+   amount), dates, readings, totals, late-payment amounts, usage history and billing history. The prompt
+   covers each layout (K-Electric bill calculation, LESCO/IESCO "bill charges breakdown" summary), net
+   metering, Urdu labels and `CR` credits.
+2. **Apply the guide's rules in code** (`toLevel1`): provider from the file name (KESC → KE), lines printed as 0
+   dropped, subsidies negative, subtotal rows moved to `total_charges` / `total_taxes`, a single combined tax
+   amount → `taxes: []`, `payable_after_due_date` = highest late-payment amount, a dropped `CR` sign detected
+   from current bill + arrears, readings that cannot explain the billed units (several meter rows) → `null`,
+   dates and numbers validated (invalid → `null`), fields output in the guide's exact order.
+3. **Self-consistency** (`decodeBill`): each bill is read twice independently. If the two Level 1 results differ,
+   a third reading is made, given any failed checks as feedback (`checkConsistency`: readings vs units, lines vs
+   subtotals, charges + taxes vs current bill, 12-month history), and each field is decided by majority vote.
+   Random misreads rarely repeat, so voting removes most of them.
 4. **Answer** (`src/lib/answer.ts`, `src/lib/stats.ts`): all 12 questions for a bill are answered in one
-   conversation. Code precomputes the common numbers (averages, highs/lows, month comparisons,
-   tax percentages, cost per unit, late-payment difference, days to due date). For any other arithmetic
-   the model must call a `calculate` tool (evaluated with `mathjs`), so numbers never come from the model's
-   head. The prompt requires answers grounded only in the bill, labelled estimates, and stated
-   interpretations for ambiguous questions.
+   conversation. Code precomputes the common numbers (averages, highs/lows, month comparisons, tax
+   percentages, cost per unit, late-payment difference, days to due date). For anything else the model must
+   call tools: `calculate` (arithmetic, evaluated with `mathjs`) and `history_months` (exact filtering and
+   counting of usage months). Numbers never come from the model's head. The prompt requires answers grounded
+   only in the bill, labelled estimates, stated interpretations for ambiguous questions, and plain English.
 5. **Robustness** (`src/lib/llm.ts`, `scripts/decode.ts`): requests are spaced to respect 15 requests/min,
-   temporary errors are retried with backoff, every bill is cached, a failed bill still produces a valid
-   all-`null` JSON row, and missing answers are re-asked once before a clear fallback answer is used,
-   so no CSV cell is ever empty. CSVs are written with a CSV library, keeping the template's columns and
-   row order.
+   temporary errors (429/503) are retried with backoff, every bill is cached (code rules are re-applied to
+   cached readings), a failed bill still produces a valid all-`null` JSON row, and missing answers are re-asked
+   once before a clear fallback answer is used, so no CSV cell is ever empty. CSVs are written with a CSV
+   library, keeping the template's columns and row order.
+
+### Accuracy check
+
+`data/sample/expected/` holds hand-checked Level 1 JSON for the five training bills (KESC_0008 from the
+guide's worked example). `npm run compare -- output/train/level1.csv data/sample/expected` scores a run the
+way the guide does (text exact, numbers ±1). Current result: 90/90 fields.
 
 ### Project layout
 
@@ -83,8 +94,8 @@ bill image ──► Gemini (vision, JSON schema) ──► code: clean + check 
 |---|---|
 | `scripts/decode.ts` | Batch CLI: bill folder + CSV templates → `output/level1.csv`, `output/level2.csv` |
 | `src/lib/llm.ts` | The only module that calls the model (rate limit, retries, JSON parsing) |
-| `src/lib/extract.ts` | Level 1: prompt, response schema, cleaning, consistency checks |
-| `src/lib/answer.ts` | Level 2: prompt, `calculate` tool loop |
+| `src/lib/extract.ts` | Level 1: prompt, response schema, code rules, consistency checks, voting |
+| `src/lib/answer.ts` | Level 2: prompt, tool loop (`calculate`, `history_months`) |
 | `src/lib/stats.ts` | Numbers precomputed in code for Level 2 |
 | `src/lib/types.ts` | Shared types and the allowed charge/tax types |
 | `src/app/` | Next.js web demo (`page.tsx`) and its API routes (`api/decode`, `api/ask`) |
