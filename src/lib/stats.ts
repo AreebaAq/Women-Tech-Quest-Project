@@ -65,6 +65,7 @@ function lateSchedule(f: BillFacts, dueDate: string | null) {
       pay_between: `${range.from} to ${range.to}`,
       days_late: lateTo === null ? `${lateFrom} or more days late` : `${lateFrom} to ${lateTo} days late`,
       amount: b.amount,
+      extra_over_amount_due: f.payable_within_due_date !== null ? Math.round((b.amount - f.payable_within_due_date) * 100) / 100 : null,
     };
   });
 }
@@ -90,7 +91,81 @@ export function computeStats(l1: Level1, f: BillFacts) {
   const bill = l1.current_bill;
   const energy = r2(l1.charges.filter((c) => c.type === "energy").reduce((s, c) => s + c.amount, 0));
 
+  // Every month with units, oldest first, current month last.
+  const timeline = [...hist.map((h) => ({ month: h.month, units: h.units, current: false }))];
+  if (billMonth && units !== null) timeline.push({ month: billMonth, units, current: true });
+  const label = (m: { month: string; units: number; current: boolean }) => `${monthName(m.month)}: ${m.units}${m.current ? " (this bill)" : ""}`;
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+  const avg = (xs: number[]) => (xs.length ? r2(sum(xs) / xs.length) : null);
+  const highest = (xs: typeof timeline) => (xs.length ? label(xs.reduce((a, b) => (b.units > a.units ? b : a))) : null);
+  const season = (months: number[]) => {
+    const picked = timeline.filter((m) => months.includes(Number(m.month.slice(5, 7))));
+    return { months: picked.map(label), total: picked.length ? sum(picked.map((m) => m.units)) : null, average: avg(picked.map((m) => m.units)) };
+  };
+  const summer = season([6, 7, 8]);
+  const winter = season([12, 1, 2]);
+  const last3 = timeline.slice(-3);
+  const nextMonth = billMonth
+    ? (() => {
+        const [y, m] = billMonth.split("-").map(Number);
+        const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+        const lastYear = `${Number(next.slice(0, 4)) - 1}${next.slice(4)}`;
+        return { next_month: monthName(next), same_month_last_year: timeline.find((t) => t.month === lastYear) ?? null };
+      })()
+    : null;
+  const costPerUnit = bill !== null && units ? bill / units : null;
+  const lastMonth = hist.at(-1) ?? null;
+  const billed = f.billing_history.filter((b) => b.billed_amount !== null).map((b) => b.billed_amount!);
+
+  const trends = {
+    last_12_months_including_this_bill: timeline.slice(-12).map(label),
+    highest_month_in_last_12_including_this_bill: highest(timeline.slice(-12)),
+    highest_month_in_12_months_before_this_bill: highest(timeline.filter((t) => !t.current).slice(-12)),
+    summer_jun_to_aug: summer,
+    winter_dec_to_feb: winter,
+    summer_minus_winter:
+      summer.total !== null && winter.total !== null
+        ? { total_difference: summer.total - winter.total, average_difference: r2(summer.average! - winter.average!) }
+        : null,
+    last_3_months_including_this_bill: last3.map(label),
+    last_3_months_direction:
+      last3.length === 3
+        ? last3[2].units > last3[1].units && last3[1].units > last3[0].units
+          ? "steadily up"
+          : last3[2].units < last3[1].units && last3[1].units < last3[0].units
+            ? "steadily down"
+            : `mixed (change over the 3 months: ${last3[2].units - last3[0].units} units)`
+        : null,
+    next_month_estimate_inputs: nextMonth && {
+      next_month: nextMonth.next_month,
+      same_month_last_year_units: nextMonth.same_month_last_year ? label(nextMonth.same_month_last_year) : "not shown on the bill",
+      average_last_12_months_including_this_bill: avg(timeline.slice(-12).map((t) => t.units)),
+      average_last_3_months_including_this_bill: avg(last3.map((t) => t.units)),
+    },
+  };
+
+  const budgeting = {
+    billing_history_months_with_amount: billed.length,
+    average_billed_amount_in_billing_history: avg(billed),
+    average_monthly_cost_estimate_from_units:
+      costPerUnit !== null && allAvg !== null
+        ? { average_units_per_month: allAvg, cost_per_unit_on_this_bill: r2(costPerUnit), estimate: r2(allAvg * costPerUnit) }
+        : null,
+    same_units_as_last_month:
+      lastMonth && costPerUnit !== null
+        ? {
+            last_month: monthName(lastMonth.month),
+            last_month_units: lastMonth.units,
+            estimate_at_this_bills_cost_per_unit: r2(lastMonth.units * costPerUnit),
+            last_months_actual_billed_amount:
+              f.billing_history.find((b) => b.month === lastMonth.month)?.billed_amount ?? "not shown on the bill",
+          }
+        : null,
+  };
+
   return {
+    trends,
+    budgeting,
     units: {
       current_month_units: units,
       history_months_count: hist.length,

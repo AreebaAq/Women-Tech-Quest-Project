@@ -126,6 +126,12 @@ Rules:
 - late_payment_amounts: every TOTAL amount payable after the due date (e.g. "Till 22-Apr-24-Apr Rs.3,574", "After 24-Apr Rs.3,716",
   "Upto 14/09/26 45088", "After 14/09/26 45263"). The "L.P Surcharge" row is only the surcharge, never put it here.
   If the payable-after-due-date box says something like "NOT TO BE PAID" instead of an amount, return an empty list.
+- other_details must include, when printed: net metering evidence (e.g. "Customer Type: NM", "NET METERING CONNECTION",
+  import/export meter rows, "Net Metering Benefit" amount, tariff ending in T) or "Customer Type: STAR"/no such evidence;
+  the FPA/FCA amount and the month it is for (e.g. "FCA :Jul-26" -> month Jul-26; the Urdu note "... جولائی 26 ... FPA 471" means
+  FPA of Rs 471 for July 2026 consumption); "Total FPA"; the late payment surcharge amounts (e.g. "L.P Surcharge 339 / 678",
+  "Late Payment Surcharge (5%) 724.07", "(10%) 1448.13"); the printed energy/taxes percentage split; any message board text in English.
+- billing_history: read EVERY row of the payment history (LESCO/IESCO print 12 months in two halves; K-Electric prints 3).
 - usage_history: read every bar/row of the month-wise units history, oldest first, excluding the current month.
   It normally covers the 12 months before the bill month. The first row is sometimes printed over the table header
   (e.g. "JUL 25  781  35,552" overlapping "MONTH STATUS UNITS BILL"); include it. Keep negative units negative (net metering).
