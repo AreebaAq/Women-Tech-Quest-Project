@@ -10,7 +10,8 @@
     "test:api": "node --env-file=.env scripts/test-api.mjs",
     "decode": "tsx scripts/decode.ts",
     "compare": "tsx scripts/compare.ts",
-    "test": "tsx --test tests/extract.test.ts"
+    "test": "tsx --test tests/extract.test.ts",
+    "validate": "tsx scripts/validate.ts"
   },
   "dependencies": {
     "@google/genai": "2.28.0",
