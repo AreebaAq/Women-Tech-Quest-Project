@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   description: "Reads K-Electric, LESCO and IESCO electricity bills and explains them. Women Tech Quest 2026.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
