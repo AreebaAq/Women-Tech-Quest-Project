@@ -11,7 +11,7 @@ import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
 import { answerQuestions, type Question } from "../src/lib/answer";
-import { decodeBill, emptyLevel1, mimeTypeFor } from "../src/lib/extract";
+import { checkConsistency, decodeBill, emptyLevel1, mimeTypeFor, toLevel1 } from "../src/lib/extract";
 import { MODEL_NAME, MODEL_PROVIDER } from "../src/lib/llm";
 import type { DecodedBill } from "../src/lib/types";
 
@@ -66,7 +66,11 @@ function readCache<T>(file: string): T | null {
 async function getDecoded(billId: string): Promise<DecodedBill> {
   const cacheFile = path.join(cacheDir, `${billId}.json`);
   const cached = readCache<DecodedBill>(cacheFile);
-  if (cached) return cached;
+  if (cached?.facts) {
+    // Re-apply the code rules to the cached model reading, so rule changes need no new model calls.
+    const level1 = toLevel1(billId, cached.facts);
+    return { ...cached, level1, warnings: checkConsistency(level1, cached.facts) };
+  }
 
   const image = findImage(billId);
   if (!image) {

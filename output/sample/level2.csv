@@ -1,5 +1,0 @@
-bill_id,question_id,question,answer
-KESC_0008_fromguide,Q1,How much of my bill is taxes?,"Taxes and duties total PKR 569.62 out of your current bill of PKR 3,430.24, making up about 16.61% of the bill. The tax lines shown are sales tax of PKR 520.21, electricity duty of PKR 29.41, and MUCT (KMC) of PKR 20.00."
-KESC_0008_fromguide,Q2,How many months in my history went above 200 units?,"Two of the 12 previous months exceeded 200 units: July 2025 with 239 units and August 2025 with 203 units. The current month used 151 units, so the count remains two whether or not the current month is included."
-KESC_0008_fromguide,Q3,"If I use 20% more units next month, roughly what would my bill be?","Using 20% more units would bring your consumption to 181.2 units. Based on your average cost of PKR 22.72 per unit on this bill, your estimated bill would be roughly PKR 4,116.17."
-KESC_0008_fromguide,Q4,How much extra will I pay if I pay after the due date?,"You will pay an extra PKR 286 if you pay after the due date, bringing your total from PKR 3,430 up to PKR 3,716."

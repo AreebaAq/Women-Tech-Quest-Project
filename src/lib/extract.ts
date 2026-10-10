@@ -20,7 +20,7 @@ const FACTS_SCHEMA: Schema = {
     due_date: { ...str, description: "YYYY-MM-DD, last date to pay without late surcharge" },
     previous_reading: num,
     current_reading: num,
-    units_consumed: { ...num, description: "Units billed for the current month, as printed" },
+    units_consumed: { ...num, description: "Total units billed for the current month as printed (e.g. 'Current Month 901 units' or the UNITS column), not one peak/off-peak row" },
     lines: {
       type: Type.ARRAY,
       description: "Every printed line of the charges section and of the taxes/government section, in printed order",
@@ -101,6 +101,9 @@ Rules:
 - Transcribe values exactly as printed. Never recalculate, round, or correct amounts.
 - Amounts are plain numbers in PKR: "Rs. 19,964" -> 19964. A credit like "38209CR" -> -38209. Subsidy/relief lines are negative.
 - Dates: "22nd Sep 2026" -> "2026-09-22", "07-Apr-2026" -> "2026-04-07". Bill month "MAR 2026" or "Apr-26" -> "2026-03" / "2026-04".
+- Watch for "CR" after amounts everywhere, including payable amounts: "54770CR" -> -54770.
+- If the meter table has several rows (net metering), use the readings of the row whose units equal the billed units, usually the first row.
+  If no single row matches the billed units, use null for previous_reading and current_reading.
 - Use null for anything not printed, blank, covered by a grey box, or unreadable. Do not guess.
 - Never output names, addresses, CNIC, account, reference, consumer or meter numbers.
 - lines: one entry per printed line in the charges section, and one per line in the tax/government section.
@@ -112,8 +115,20 @@ Rules:
   Tax types: gst (sales tax/GST including GST on FPA), electricity_duty (ED), income_tax, municipal_tax (e.g. KE MUCT/KMC),
   other_tax (extra tax, further tax, TV fee, anything else in the tax section).
 - If the bill prints only one combined tax amount without separate lines, leave tax lines out and put it in total_taxes.
-- late_payment_amounts: every total amount payable after the due date (e.g. "Till 22-Apr-24-Apr Rs.3,574", "After 24-Apr Rs.3,716").
+- LESCO / IESCO "BILL CHARGES BREAKDOWN" summary layout:
+    "Total Electricity Charges" -> one charge line, type energy.
+    "Subsidies" -> one charge line, type subsidy, negative amount (skip it if blank).
+    "Net Electricity Charges" -> this is total_charges. It is NOT a line.
+    "Taxes" (one combined amount) -> total_taxes. Do NOT add a tax line for it.
+    "Current Bill" -> current_bill. "Grand Total" / "Payable within due date" -> payable_within_due_date.
+    Amounts in the right-hand column (Arrears, Installment, Adjustments, W.E Credit, Total FPA) are NOT charge lines;
+    put Arrears in arrears and Total FPA etc. in other_details.
+- late_payment_amounts: every TOTAL amount payable after the due date (e.g. "Till 22-Apr-24-Apr Rs.3,574", "After 24-Apr Rs.3,716",
+  "Upto 14/09/26 45088", "After 14/09/26 45263"). The "L.P Surcharge" row is only the surcharge, never put it here.
+  If the payable-after-due-date box says something like "NOT TO BE PAID" instead of an amount, return an empty list.
 - usage_history: read every bar/row of the month-wise units history, oldest first, excluding the current month.
+  It normally covers the 12 months before the bill month. The first row is sometimes printed over the table header
+  (e.g. "JUL 25  781  35,552" overlapping "MONTH STATUS UNITS BILL"); include it. Keep negative units negative (net metering).
 
 Example: for a K-Electric bill (Bill Month Apr-26) the correct core values were:
 tariff "A1-R", sanctioned_load_kw 3, reading_date "2026-04-03", issue_date "2026-04-07", due_date "2026-04-21",
@@ -202,23 +217,80 @@ function cleanFacts(raw: Partial<BillFacts>): BillFacts {
   };
 }
 
+// Subtotal rows sometimes come back as lines; they belong in total_charges / total_taxes.
+const SUBTOTAL_LABEL = /net electricity charges|sub-?total|^total charges$|^electricity charges$|electricity charges for current month|^taxes and duties$/i;
+
+const close = (a: number, b: number) => Math.abs(a - b) <= 1;
+const sum = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
+
+/**
+ * Drops lines whose amount equals a printed subtotal (e.g. "Electricity Charges 38,098.01"
+ * read as a tax line), but only when that makes the section add up to its total.
+ */
+function dropSubtotalLines(lines: BillLine[], total: number | null, subtotals: number[]): BillLine[] {
+  if (total === null || close(sum(lines.map((l) => l.amount!)), total)) return lines;
+  const filtered = lines.filter((l) => !subtotals.some((s) => close(l.amount!, s)));
+  return filtered.length && close(sum(filtered.map((l) => l.amount!)), total) ? filtered : lines;
+}
+
 /** Builds the Level 1 JSON in the exact field order from the guide. */
+// A single tax row with a generic label ("Taxes", "Taxes 15.24 %") is a combined amount.
+const COMBINED_TAX_LABEL = /^\s*(total\s+)?(taxes|tax|taxes and duties|govt\.? charges|government charges)\b[\s\d.%]*$/i;
+
 export function toLevel1(billId: string, f: BillFacts): Level1 {
   const kept = f.lines.filter((l) => l.amount !== null && l.amount !== 0);
-  const charges = kept
-    .filter((l) => l.section === "charges")
+  let totalCharges = f.total_charges;
+  let totalTaxes = f.total_taxes;
+
+  const subtotal = kept.find((l) => l.section === "charges" && SUBTOTAL_LABEL.test(l.label));
+  if (subtotal && totalCharges === null) totalCharges = subtotal.amount;
+
+  let taxLines = kept.filter((l) => l.section === "taxes" && !SUBTOTAL_LABEL.test(l.label));
+  if (taxLines.length === 1 && COMBINED_TAX_LABEL.test(taxLines[0].label)) {
+    if (totalTaxes === null) totalTaxes = taxLines[0].amount;
+    taxLines = [];
+  }
+
+  const subtotals = [totalCharges, totalTaxes, f.current_bill].filter((x): x is number => x !== null);
+  taxLines = dropSubtotalLines(taxLines, totalTaxes, subtotals);
+  const chargeLines = dropSubtotalLines(
+    kept.filter((l) => l.section === "charges" && l !== subtotal),
+    totalCharges,
+    subtotals,
+  );
+
+  const charges = chargeLines
     .map((l) => {
       const type: ChargeType = (CHARGE_TYPES as readonly string[]).includes(l.type) ? (l.type as ChargeType) : "other";
       const amount = type === "subsidy" ? -Math.abs(l.amount!) : l.amount!;
       return { type, amount };
     });
-  const taxes = kept
-    .filter((l) => l.section === "taxes")
+  const taxes = taxLines
     .map((l) => ({
       type: ((TAX_TYPES as readonly string[]).includes(l.type) ? l.type : "other_tax") as TaxType,
       amount: l.amount!,
     }));
   const lateAmounts = f.late_payment_amounts.map((a) => a.amount).filter((a): a is number => a !== null);
+
+  // Readings that don't explain the billed units come from one of several meter rows
+  // (net metering, peak/off-peak), so no single printed pair is "the" reading.
+  let prevReading = f.previous_reading;
+  let currReading = f.current_reading;
+  if (prevReading !== null && currReading !== null && f.units_consumed !== null) {
+    const diff = currReading - prevReading;
+    const multiplier = diff ? f.units_consumed / diff : 0;
+    if (Math.abs(diff - f.units_consumed) > 1 && !(Number.isInteger(Math.round(multiplier * 1000) / 1000) && multiplier > 1)) {
+      prevReading = null;
+      currReading = null;
+    }
+  }
+
+  // A dropped "CR" shows up as a payable amount equal to minus (current bill + arrears).
+  let payableWithin = f.payable_within_due_date;
+  if (payableWithin !== null && payableWithin > 0 && f.current_bill !== null && f.arrears !== null) {
+    const owed = f.current_bill + f.arrears;
+    if (owed < 0 && Math.abs(payableWithin + owed) <= 1) payableWithin = -payableWithin;
+  }
 
   return {
     provider: providerFromBillId(billId, f.provider_printed),
@@ -228,26 +300,26 @@ export function toLevel1(billId: string, f: BillFacts): Level1 {
     reading_date: f.reading_date,
     issue_date: f.issue_date,
     due_date: f.due_date,
-    previous_reading: f.previous_reading,
-    current_reading: f.current_reading,
+    previous_reading: prevReading,
+    current_reading: currReading,
     units_consumed: f.units_consumed,
     charges,
-    total_charges: f.total_charges,
+    total_charges: totalCharges,
     taxes,
-    total_taxes: f.total_taxes,
+    total_taxes: totalTaxes,
     current_bill: f.current_bill,
     arrears: f.arrears,
-    payable_within_due_date: f.payable_within_due_date,
+    payable_within_due_date: payableWithin,
     payable_after_due_date: lateAmounts.length ? Math.max(...lateAmounts) : null,
   };
 }
 
-const close = (a: number, b: number) => Math.abs(a - b) <= 1;
-const sum = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
-
-/** Cross-checks that should hold on a correctly read bill. Used to trigger one re-read. */
-export function checkConsistency(l1: Level1): string[] {
+/** Cross-checks that should hold on a correctly read bill. Failed checks are sent back as feedback on a re-read. */
+export function checkConsistency(l1: Level1, f?: BillFacts): string[] {
   const w: string[] = [];
+  if (f && f.usage_history.length > 0 && f.usage_history.length < 12) {
+    w.push(`usage_history has only ${f.usage_history.length} months; the history table normally shows 12 (check the first row, it can overlap the header)`);
+  }
   if (l1.previous_reading !== null && l1.current_reading !== null && l1.units_consumed !== null) {
     const diff = l1.current_reading - l1.previous_reading;
     if (diff > 0 && !close(diff, l1.units_consumed)) {
@@ -286,30 +358,64 @@ async function readBill(image: Buffer, mimeType: string, feedback?: string): Pro
   return cleanFacts(parseJson<Partial<BillFacts>>(response.text));
 }
 
+interface Reading {
+  facts: BillFacts;
+  level1: Level1;
+  warnings: string[];
+}
+
+// Rounds numbers so 663.5 and 663.50 compare equal.
+const key = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "number" ? Math.round(x * 100) / 100 : x));
+
+/** Per-field majority vote over the readings; ties go to the reading that passes most checks. */
+function vote(readings: Reading[]): Level1 {
+  const ranked = [...readings].sort((a, b) => a.warnings.length - b.warnings.length);
+  const voted = { ...ranked[0].level1 } as Record<string, unknown>;
+  for (const field of Object.keys(voted)) {
+    const counts = new Map<string, { n: number; value: unknown }>();
+    for (const r of ranked) {
+      const value = (r.level1 as unknown as Record<string, unknown>)[field];
+      const k = key(value);
+      counts.set(k, { n: (counts.get(k)?.n ?? 0) + 1, value: counts.get(k)?.value ?? value });
+    }
+    // Map keeps insertion order, so among equal counts the best-ranked reading wins.
+    let best: { n: number; value: unknown } | undefined;
+    for (const c of counts.values()) if (!best || c.n > best.n) best = c;
+    voted[field] = best!.value;
+  }
+  return voted as unknown as Level1;
+}
+
 /**
- * Reads one bill. If the numbers don't add up, asks the model to re-read once
- * with the failed checks, and keeps whichever reading passes more checks.
+ * Reads one bill with self-consistency: two independent readings; if they disagree
+ * on any Level 1 field, a third reading (told which checks failed, if any) breaks the
+ * tie with a per-field majority vote. Random misreads rarely repeat, so this removes most of them.
  */
 export async function decodeBill(billId: string, image: Buffer, mimeType: string): Promise<DecodedBill> {
-  let facts = await readBill(image, mimeType);
-  let level1 = toLevel1(billId, facts);
-  let warnings = checkConsistency(level1);
+  const read = async (feedback?: string): Promise<Reading> => {
+    const facts = await readBill(image, mimeType, feedback);
+    const level1 = toLevel1(billId, facts);
+    return { facts, level1, warnings: checkConsistency(level1, facts) };
+  };
 
-  if (warnings.length) {
-    try {
-      const retryFacts = await readBill(image, mimeType, warnings.join("\n- "));
-      const retryL1 = toLevel1(billId, retryFacts);
-      const retryWarnings = checkConsistency(retryL1);
-      if (retryWarnings.length < warnings.length) {
-        facts = retryFacts;
-        level1 = retryL1;
-        warnings = retryWarnings;
-      }
-    } catch (err) {
-      warnings.push(`re-read failed: ${(err as Error).message}`);
+  const readings = [await read()];
+  try {
+    readings.push(await read());
+    if (key(readings[0].level1) !== key(readings[1].level1)) {
+      const failed = [...new Set(readings.flatMap((r) => r.warnings))];
+      readings.push(await read(failed.length ? failed.join("\n- ") : undefined));
     }
+  } catch (err) {
+    // Extra readings are a bonus; keep what we have if one fails.
+    console.warn(`  ${billId}: extra reading failed: ${(err as Error).message}`);
   }
-  return { billId, level1, facts, warnings };
+
+  const level1 = readings.length === 1 ? readings[0].level1 : vote(readings);
+  // Keep the facts (used for Level 2) from the reading that agrees most with the vote.
+  const agreement = (r: Reading) =>
+    Object.keys(level1).filter((k) => key((r.level1 as never)[k]) === key((level1 as never)[k])).length;
+  const facts = [...readings].sort((a, b) => agreement(b) - agreement(a))[0].facts;
+  return { billId, level1, facts, warnings: checkConsistency(level1, facts) };
 }
 
 /** A Level 1 object with every field null, used when a bill cannot be read at all. */
