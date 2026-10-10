@@ -62,6 +62,7 @@ export default function Home() {
   async function decode() {
     if (!file) return;
     setDecoding(true);
+    setBill(null);
     setError("");
     try {
       const form = new FormData();
@@ -78,11 +79,49 @@ export default function Home() {
   }
 
   const step = bill ? 2 : file ? 1 : 0;
+  // Three columns once a bill is decoded: bill | details | chat.
+  const width = bill ? "max-w-[1600px]" : "max-w-6xl";
+
+  const uploader = (
+    <section className="space-y-4">
+      <label
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); pick(e.dataTransfer.files?.[0]); }}
+        className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed text-center transition-colors ${
+          bill ? "p-3" : "p-6"
+        } ${dragging ? "border-violet-600 bg-violet-700/5" : "border-black/15 hover:border-violet-500 dark:border-white/20"}`}
+      >
+        <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
+        <span className="font-semibold">{file ? file.name : "Drop your bill here or click to choose"}</span>
+        <span className="text-sm opacity-55">{file ? "Click or drop to choose a different bill" : "PNG or JPG, up to 10 MB"}</span>
+      </label>
+
+      {preview && (
+        <div className="overflow-hidden rounded-2xl border border-black/8 bg-white shadow-sm dark:border-white/10 dark:bg-white/5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={preview} alt="Uploaded electricity bill" className={`w-full object-contain ${bill ? "max-h-[70vh]" : "max-h-[65vh]"}`} />
+        </div>
+      )}
+
+      {!bill && (
+        <button
+          onClick={decode}
+          disabled={!file || decoding}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3 font-semibold text-white shadow-lg shadow-violet-700/20 transition-colors hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+        >
+          {decoding && <span className="size-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />}
+          {decoding ? "Reading your bill..." : "Decode bill"}
+        </button>
+      )}
+      <p className="text-center text-xs opacity-50">Names, addresses and ID numbers are never extracted.</p>
+    </section>
+  );
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <header className="border-b border-black/8 bg-white/70 backdrop-blur dark:border-white/10 dark:bg-white/5">
-        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className={`mx-auto flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 ${width}`}>
           <div className="flex items-center gap-2.5">
             <span className="grid size-9 place-items-center rounded-xl bg-violet-700 text-white"><Bolt /></span>
             <div>
@@ -97,81 +136,57 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
-        <div className="mb-8 space-y-4">
+      <main className={`mx-auto w-full flex-1 px-4 ${bill ? "py-5" : "py-6 sm:py-8"} ${width}`}>
+        <div className={`flex flex-wrap items-end justify-between gap-4 ${bill ? "mb-4" : "mb-6"}`}>
           <div>
-            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Understand your electricity bill</h1>
-            <p className="mt-2 max-w-2xl opacity-65">
-              Upload a photo or scan of your bill. We read the charges, taxes and amounts due, then answer your questions in plain English.
-            </p>
+            <h1 className={`font-bold tracking-tight ${bill ? "text-2xl" : "text-3xl sm:text-4xl"}`}>Understand your electricity bill</h1>
+            {!bill && (
+              <p className="mt-2 max-w-2xl opacity-65">
+                Upload a photo or scan of your bill. We read the charges, taxes and amounts due, then answer your questions in plain English.
+              </p>
+            )}
           </div>
           <Steps current={step} />
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          <section className="space-y-4">
-            <label
-              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={(e) => { e.preventDefault(); setDragging(false); pick(e.dataTransfer.files?.[0]); }}
-              className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed p-6 text-center transition-colors ${
-                dragging ? "border-violet-600 bg-violet-700/5" : "border-black/15 hover:border-violet-500 dark:border-white/20"
-              }`}
-            >
-              <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
-              <span className="font-semibold">{file ? file.name : "Drop your bill here or click to choose"}</span>
-              <span className="text-sm opacity-55">{file ? "Click to choose a different bill" : "PNG or JPG, up to 10 MB"}</span>
-            </label>
+        {error && (
+          <p className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">{error}</p>
+        )}
 
-            {preview && (
-              <div className="overflow-hidden rounded-2xl border border-black/8 bg-white dark:border-white/10 dark:bg-white/5">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={preview} alt="Uploaded electricity bill" className="max-h-[65vh] w-full object-contain" />
-              </div>
-            )}
-
-            <button
-              onClick={decode}
-              disabled={!file || decoding}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3 font-semibold text-white shadow-lg shadow-violet-700/20 transition-colors hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
-            >
-              {decoding && <span className="size-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />}
-              {decoding ? "Reading your bill..." : bill ? "Decode again" : "Decode bill"}
-            </button>
-            <p className="text-center text-xs opacity-50">Names, addresses and ID numbers are never extracted.</p>
-          </section>
-
-          <section className="space-y-6">
-            {error && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">{error}</p>}
-
-            {decoding && (
-              <div className="space-y-4" aria-label="Reading the bill">
-                <div className="grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)}</div>
-                <div className="skeleton h-72" />
-                <p className="text-center text-sm opacity-55">Reading your bill. This usually takes 10–20 seconds.</p>
-              </div>
-            )}
-
-            {bill && !decoding && (
-              <>
-                <BillDetails bill={bill} />
-                <AskPanel key={bill.billId + bill.level1.current_bill} bill={bill} />
-              </>
-            )}
-
-            {!bill && !decoding && (
-              <div className="grid h-full min-h-72 place-items-center rounded-2xl border border-dashed border-black/12 p-8 text-center dark:border-white/15">
-                <div className="max-w-sm space-y-2">
-                  <p className="font-semibold">Your bill details will appear here</p>
-                  <p className="text-sm opacity-60">
-                    Amount due, units used, every charge and tax line, and the full JSON. Then ask questions like
-                    “How much of my bill is taxes?”
-                  </p>
+        {bill ? (
+          <div className="grid items-start gap-6 lg:grid-cols-2 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.1fr)_minmax(0,1fr)]">
+            <div className="lg:col-start-1 lg:row-start-1">{uploader}</div>
+            <section className="lg:col-start-1 lg:row-start-2 xl:col-start-2 xl:row-start-1">
+              <BillDetails bill={bill} />
+            </section>
+            <aside className="h-[32rem] lg:sticky lg:top-4 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:h-[calc(100vh-11rem)] lg:min-h-[26rem] xl:col-start-3 xl:row-span-1">
+              <AskPanel key={bill.billId + bill.level1.current_bill} bill={bill} />
+            </aside>
+          </div>
+        ) : (
+          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            {uploader}
+            <section>
+              {decoding ? (
+                <div className="space-y-4" aria-label="Reading the bill">
+                  <div className="grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)}</div>
+                  <div className="skeleton h-72" />
+                  <p className="text-center text-sm opacity-55">Reading your bill. This usually takes 10–20 seconds.</p>
                 </div>
-              </div>
-            )}
-          </section>
-        </div>
+              ) : (
+                <div className="grid min-h-72 place-items-center rounded-2xl border border-dashed border-black/12 p-8 text-center dark:border-white/15">
+                  <div className="max-w-sm space-y-2">
+                    <p className="font-semibold">Your bill details will appear here</p>
+                    <p className="text-sm opacity-60">
+                      Amount due, units used, every charge and tax line, and the full JSON. Then ask questions like
+                      “How much of my bill is taxes?”
+                    </p>
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
       </main>
 
       <footer className="border-t border-black/8 py-4 text-center text-xs opacity-55 dark:border-white/10">
