@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Women Tech Quest 2026",
-  description: "Built with Gemini 3.5 Flash-Lite",
+  title: "Utility Bill Decoder",
+  description: "Reads K-Electric, LESCO and IESCO electricity bills and explains them. Women Tech Quest 2026.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -1,68 +1,40 @@
 "use client";
 
 import { useState } from "react";
-import type { DecodedBill, Level1 } from "@/lib/types";
+import type { DecodedBill } from "@/lib/types";
+import { AskPanel } from "./components/AskPanel";
+import { BillDetails } from "./components/BillDetails";
 
-const SUGGESTED = [
-  "How much of my bill is taxes?",
-  "How does this month's usage compare to my average?",
-  "How much extra will I pay if I pay after the due date?",
-  "If I use 20% fewer units next month, roughly what would my bill be?",
-];
+const STEPS = ["Upload bill", "Extract details", "Ask questions"];
 
-const pkr = (n: number | null) =>
-  n === null ? "—" : `PKR ${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
-const show = (v: string | number | null) => (v === null ? "—" : String(v));
-
-function Summary({ l1 }: { l1: Level1 }) {
-  const rows: [string, string][] = [
-    ["Provider", show(l1.provider)],
-    ["Tariff", show(l1.tariff)],
-    ["Sanctioned load", l1.sanctioned_load_kw === null ? "—" : `${l1.sanctioned_load_kw} kW`],
-    ["Bill month", show(l1.bill_month)],
-    ["Reading / issue / due", `${show(l1.reading_date)} / ${show(l1.issue_date)} / ${show(l1.due_date)}`],
-    ["Meter readings", `${show(l1.previous_reading)} → ${show(l1.current_reading)}`],
-    ["Units consumed", show(l1.units_consumed)],
-    ["Total charges", pkr(l1.total_charges)],
-    ["Total taxes", pkr(l1.total_taxes)],
-    ["Current bill", pkr(l1.current_bill)],
-    ["Arrears", pkr(l1.arrears)],
-    ["Payable by due date", pkr(l1.payable_within_due_date)],
-    ["Payable after due date", pkr(l1.payable_after_due_date)],
-  ];
+function Steps({ current }: { current: number }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2">
-      <dl className="divide-y divide-black/10 rounded-xl border border-black/10 text-sm dark:divide-white/10 dark:border-white/15">
-        {rows.map(([k, v]) => (
-          <div key={k} className="flex justify-between gap-4 px-3 py-2">
-            <dt className="opacity-60">{k}</dt>
-            <dd className="text-right font-medium">{v}</dd>
-          </div>
-        ))}
-      </dl>
-      <div className="space-y-4 text-sm">
-        <LineTable title="Charges" lines={l1.charges} />
-        <LineTable title="Taxes" lines={l1.taxes} />
-      </div>
-    </div>
+    <ol className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+      {STEPS.map((s, i) => {
+        const state = i < current ? "done" : i === current ? "active" : "todo";
+        return (
+          <li key={s} className="flex items-center gap-2">
+            <span
+              className={`grid size-6 place-items-center rounded-full text-xs font-bold ${
+                state === "todo" ? "border border-black/15 opacity-50 dark:border-white/20" : "bg-violet-700 text-white"
+              }`}
+            >
+              {state === "done" ? "✓" : i + 1}
+            </span>
+            <span className={state === "todo" ? "opacity-50" : "font-medium"}>{s}</span>
+            {i < STEPS.length - 1 && <span className="hidden h-px w-8 bg-black/15 sm:block dark:bg-white/20" />}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
-function LineTable({ title, lines }: { title: string; lines: { type: string; amount: number }[] }) {
+function Bolt() {
   return (
-    <div className="rounded-xl border border-black/10 dark:border-white/15">
-      <h3 className="border-b border-black/10 px-3 py-2 font-semibold dark:border-white/10">{title}</h3>
-      {lines.length === 0 ? (
-        <p className="px-3 py-2 opacity-60">None listed separately</p>
-      ) : (
-        lines.map((l, i) => (
-          <div key={i} className="flex justify-between px-3 py-1.5">
-            <span className="opacity-70">{l.type}</span>
-            <span className="font-medium">{pkr(l.amount)}</span>
-          </div>
-        ))
-      )}
-    </div>
+    <svg viewBox="0 0 24 24" className="size-5" fill="currentColor" aria-hidden>
+      <path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2z" />
+    </svg>
   );
 }
 
@@ -70,24 +42,26 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [bill, setBill] = useState<DecodedBill | null>(null);
-  const [question, setQuestion] = useState("");
-  const [qa, setQa] = useState<{ q: string; a: string }[]>([]);
-  const [busy, setBusy] = useState<"" | "decode" | "ask">("");
+  const [decoding, setDecoding] = useState(false);
   const [error, setError] = useState("");
-  const [showJson, setShowJson] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   function pick(f: File | undefined) {
     if (!f) return;
+    if (!f.type.startsWith("image/")) {
+      setError("Please choose an image file (PNG or JPG).");
+      return;
+    }
+    if (preview) URL.revokeObjectURL(preview);
     setFile(f);
     setPreview(URL.createObjectURL(f));
     setBill(null);
-    setQa([]);
     setError("");
   }
 
   async function decode() {
     if (!file) return;
-    setBusy("decode");
+    setDecoding(true);
     setError("");
     try {
       const form = new FormData();
@@ -99,122 +73,110 @@ export default function Home() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
-      setBusy("");
+      setDecoding(false);
     }
   }
 
-  async function ask(q: string) {
-    if (!bill || !q.trim()) return;
-    setBusy("ask");
-    setError("");
-    try {
-      const res = await fetch("/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bill, questions: [q] }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setQa((prev) => [{ q, a: data.answers[0] }, ...prev]);
-      setQuestion("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  const button =
-    "rounded-lg bg-violet-600 px-5 py-2 font-medium text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50";
+  const step = bill ? 2 : file ? 1 : 0;
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10">
-      <h1 className="text-3xl font-bold">Utility Bill Decoder</h1>
-      <p className="mt-1 text-sm opacity-60">
-        Upload a K-Electric, LESCO or IESCO bill. Powered by Gemini 3.5 Flash-Lite.
-      </p>
+    <div className="flex min-h-full flex-1 flex-col">
+      <header className="border-b border-black/8 bg-white/70 backdrop-blur dark:border-white/10 dark:bg-white/5">
+        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-9 place-items-center rounded-xl bg-violet-700 text-white"><Bolt /></span>
+            <div>
+              <p className="font-bold leading-tight">Utility Bill Decoder</p>
+              <p className="text-xs opacity-55">K-Electric · LESCO · IESCO</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs font-medium">
+            <span className="rounded-full bg-violet-700/10 px-3 py-1 text-violet-800 dark:text-violet-200">WTQ 2026 · Build Track</span>
+            <span className="rounded-full border border-black/10 px-3 py-1 opacity-70 dark:border-white/15">Gemini 3.5 Flash-Lite</span>
+          </div>
+        </div>
+      </header>
 
-      <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <section>
-          <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-black/20 p-6 text-center hover:border-violet-500 dark:border-white/20">
-            <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => pick(e.target.files?.[0])} />
-            <span className="font-medium">{file ? file.name : "Choose a bill image"}</span>
-            <span className="text-sm opacity-60">PNG or JPG</span>
-          </label>
-          {preview && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={preview} alt="Uploaded bill" className="mt-4 max-h-[70vh] w-full rounded-xl border border-black/10 object-contain dark:border-white/15" />
-          )}
-          <button className={`${button} mt-4 w-full`} onClick={decode} disabled={!file || busy !== ""}>
-            {busy === "decode" ? "Reading the bill..." : "Decode bill"}
-          </button>
-        </section>
-
-        <section className="space-y-6">
-          {error && <p className="rounded-lg bg-red-500/10 p-3 text-red-600">{error}</p>}
-
-          {bill && (
-            <>
-              <div>
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-xl font-semibold">Level 1: Extracted details</h2>
-                  <button className="text-sm text-violet-600 hover:underline" onClick={() => setShowJson((s) => !s)}>
-                    {showJson ? "Show summary" : "Show JSON"}
-                  </button>
-                </div>
-                {showJson ? (
-                  <pre className="max-h-[60vh] overflow-auto rounded-xl bg-black/5 p-4 text-xs dark:bg-white/5">
-                    {JSON.stringify(bill.level1, null, 2)}
-                  </pre>
-                ) : (
-                  <Summary l1={bill.level1} />
-                )}
-                {bill.warnings.length > 0 && (
-                  <ul className="mt-3 list-disc rounded-lg bg-amber-500/10 p-3 pl-7 text-sm text-amber-700 dark:text-amber-400">
-                    {bill.warnings.map((w) => <li key={w}>{w}</li>)}
-                  </ul>
-                )}
-              </div>
-
-              <div>
-                <h2 className="mb-3 text-xl font-semibold">Level 2: Ask about this bill</h2>
-                <div className="mb-3 flex flex-wrap gap-2">
-                  {SUGGESTED.map((s) => (
-                    <button key={s} className="rounded-full border border-black/15 px-3 py-1 text-sm hover:border-violet-500 disabled:opacity-50 dark:border-white/20" onClick={() => ask(s)} disabled={busy !== ""}>
-                      {s}
-                    </button>
-                  ))}
-                </div>
-                <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); ask(question); }}>
-                  <input
-                    className="flex-1 rounded-lg border border-black/15 bg-transparent px-3 py-2 dark:border-white/20"
-                    placeholder="Type your question..."
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                  />
-                  <button className={button} disabled={busy !== "" || !question.trim()}>
-                    {busy === "ask" ? "Thinking..." : "Ask"}
-                  </button>
-                </form>
-                <div className="mt-4 space-y-3">
-                  {qa.map(({ q, a }, i) => (
-                    <div key={i} className="rounded-xl border border-black/10 p-4 dark:border-white/15">
-                      <p className="font-medium">{q}</p>
-                      <p className="mt-2 whitespace-pre-wrap opacity-80">{a}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-
-          {!bill && !error && (
-            <p className="rounded-xl border border-dashed border-black/15 p-6 text-center opacity-60 dark:border-white/20">
-              Choose a bill and click Decode to see its details here.
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
+        <div className="mb-8 space-y-4">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Understand your electricity bill</h1>
+            <p className="mt-2 max-w-2xl opacity-65">
+              Upload a photo or scan of your bill. We read the charges, taxes and amounts due, then answer your questions in plain English.
             </p>
-          )}
-        </section>
-      </div>
-    </main>
+          </div>
+          <Steps current={step} />
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+          <section className="space-y-4">
+            <label
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => { e.preventDefault(); setDragging(false); pick(e.dataTransfer.files?.[0]); }}
+              className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed p-6 text-center transition-colors ${
+                dragging ? "border-violet-600 bg-violet-700/5" : "border-black/15 hover:border-violet-500 dark:border-white/20"
+              }`}
+            >
+              <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
+              <span className="font-semibold">{file ? file.name : "Drop your bill here or click to choose"}</span>
+              <span className="text-sm opacity-55">{file ? "Click to choose a different bill" : "PNG or JPG, up to 10 MB"}</span>
+            </label>
+
+            {preview && (
+              <div className="overflow-hidden rounded-2xl border border-black/8 bg-white dark:border-white/10 dark:bg-white/5">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={preview} alt="Uploaded electricity bill" className="max-h-[65vh] w-full object-contain" />
+              </div>
+            )}
+
+            <button
+              onClick={decode}
+              disabled={!file || decoding}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3 font-semibold text-white shadow-lg shadow-violet-700/20 transition-colors hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+            >
+              {decoding && <span className="size-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />}
+              {decoding ? "Reading your bill..." : bill ? "Decode again" : "Decode bill"}
+            </button>
+            <p className="text-center text-xs opacity-50">Names, addresses and ID numbers are never extracted.</p>
+          </section>
+
+          <section className="space-y-6">
+            {error && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">{error}</p>}
+
+            {decoding && (
+              <div className="space-y-4" aria-label="Reading the bill">
+                <div className="grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)}</div>
+                <div className="skeleton h-72" />
+                <p className="text-center text-sm opacity-55">Reading the bill twice and cross-checking the totals. This takes about 15–30 seconds.</p>
+              </div>
+            )}
+
+            {bill && !decoding && (
+              <>
+                <BillDetails bill={bill} />
+                <AskPanel key={bill.billId + bill.level1.current_bill} bill={bill} />
+              </>
+            )}
+
+            {!bill && !decoding && (
+              <div className="grid h-full min-h-72 place-items-center rounded-2xl border border-dashed border-black/12 p-8 text-center dark:border-white/15">
+                <div className="max-w-sm space-y-2">
+                  <p className="font-semibold">Your bill details will appear here</p>
+                  <p className="text-sm opacity-60">
+                    Amount due, units used, every charge and tax line, and the full JSON. Then ask questions like
+                    “How much of my bill is taxes?”
+                  </p>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      </main>
+
+      <footer className="border-t border-black/8 py-4 text-center text-xs opacity-55 dark:border-white/10">
+        Built for Women Tech Quest 2026 · Model: Gemini 3.5 Flash-Lite (gemini-3.5-flash-lite)
+      </footer>
+    </div>
   );
 }
