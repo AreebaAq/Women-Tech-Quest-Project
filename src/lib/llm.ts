@@ -18,7 +18,7 @@ function getClient() {
     throw new Error(`MODEL_PROVIDER "${MODEL_PROVIDER}" is not supported. Use "google".`);
   }
   if (!client) {
-    const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+    const apiKey = process.env.API_KEY;
     if (!apiKey || apiKey.startsWith("your-") || apiKey === "paste-your-key-here") {
       throw new Error("API_KEY is missing. Add it to your .env file.");
     }

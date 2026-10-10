@@ -1,20 +1,111 @@
-# Women Tech Quest 2026
+# Utility Bill Decoder (Women Tech Quest 2026, Build Track)
 
-Built with Next.js 16 (TypeScript, Tailwind CSS), powered by **Gemini 3.5 Flash-Lite** (`gemini-3.5-flash-lite`).
+Reads K-Electric, LESCO and IESCO electricity bill images, extracts the billing details as JSON (Level 1),
+and answers customer questions about each bill in plain English (Level 2).
+
+- **Runtime:** Node.js 24 (any Node.js 22 or later works)
+- **Model:** Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`) via the Google AI Studio API
+- **Stack:** TypeScript, Next.js 16 (web demo), `@google/genai`, `csv-parse` / `csv-stringify`, `mathjs`, `tsx`
 
 ## Setup
+
 ```
 npm install
-copy .env.example .env   # then put your Gemini API key in .env
+copy .env.example .env      # Windows (macOS/Linux: cp .env.example .env)
 ```
 
-## Run
+Then put your Gemini API key in `.env` as `API_KEY=...`. Check it works:
+
 ```
-npm run test:api   # check the API key
-npm run dev        # start the app at http://localhost:3000
+npm run test:api
 ```
 
-## How it fits together
-- `src/app/page.tsx`: the page in the browser. It sends the prompt to `/api/ask`.
-- `src/app/api/ask/route.ts`: the backend endpoint (like a Spring controller). It calls Gemini.
-- `src/lib/gemini.ts`: `ask(prompt, system)`, the one place that talks to Gemini. The API key is only read here, on the server.
+## Generate the result CSVs
+
+Point `--bills` at the folder of bill images and `--csv` at the folder that holds the `level1.csv` and
+`level2.csv` templates:
+
+```
+npm run decode -- --bills data/test/bills --csv data/test/csv --out output
+```
+
+This writes `output/level1.csv` (one JSON per bill) and `output/level2.csv` (one answer per question).
+Results are cached in `output/cache/`, so if a run is interrupted (e.g. by the free-tier rate limit),
+running the same command again only redoes the bills that failed. Add `--fresh` to ignore the cache.
+
+Without `--csv`, every image in `--bills` is extracted and only `level1.csv` is written:
+
+```
+npm run decode -- --bills data/train/bills --out output/train
+```
+
+## Web demo
+
+```
+npm run dev        # then open http://localhost:3000
+```
+
+Upload a bill, click **Decode bill** to see the Level 1 fields (summary or raw JSON), then ask questions.
+
+## How it works
+
+```
+bill image ──► Gemini (vision, JSON schema) ──► code: clean + check ──► Level 1 JSON
+                                                       │
+                       questions ──► Gemini + calculate tool + precomputed stats ──► Level 2 answers
+```
+
+1. **Read** (`src/lib/extract.ts`): the bill image is sent to Gemini at high media resolution with a strict
+   JSON response schema. The model transcribes every printed charge and tax line (label, section, type,
+   amount), the dates, readings, totals, late-payment amounts, usage history and billing history.
+2. **Apply the rules in code** (`toLevel1`): provider comes from the file name (KESC → KE), lines printed as 0
+   are dropped, subsidies are made negative, unknown types fall back to `other` / `other_tax`,
+   `payable_after_due_date` is the highest late-payment amount, dates and numbers are validated
+   (invalid → `null`), and the fields are output in the exact order of the guide.
+3. **Self-check** (`checkConsistency`): code verifies readings vs units, charge lines vs `total_charges`,
+   tax lines vs `total_taxes`, and charges + taxes vs `current_bill`. If a check fails, the model re-reads
+   the bill once with the failed checks as feedback, and the reading that passes more checks is kept.
+4. **Answer** (`src/lib/answer.ts`, `src/lib/stats.ts`): all 12 questions for a bill are answered in one
+   conversation. Code precomputes the common numbers (averages, highs/lows, month comparisons,
+   tax percentages, cost per unit, late-payment difference, days to due date). For any other arithmetic
+   the model must call a `calculate` tool (evaluated with `mathjs`), so numbers never come from the model's
+   head. The prompt requires answers grounded only in the bill, labelled estimates, and stated
+   interpretations for ambiguous questions.
+5. **Robustness** (`src/lib/llm.ts`, `scripts/decode.ts`): requests are spaced to respect 15 requests/min,
+   temporary errors are retried with backoff, every bill is cached, a failed bill still produces a valid
+   all-`null` JSON row, and missing answers are re-asked once before a clear fallback answer is used,
+   so no CSV cell is ever empty. CSVs are written with a CSV library, keeping the template's columns and
+   row order.
+
+### Project layout
+
+| Path | Purpose |
+|---|---|
+| `scripts/decode.ts` | Batch CLI: bill folder + CSV templates → `output/level1.csv`, `output/level2.csv` |
+| `src/lib/llm.ts` | The only module that calls the model (rate limit, retries, JSON parsing) |
+| `src/lib/extract.ts` | Level 1: prompt, response schema, cleaning, consistency checks |
+| `src/lib/answer.ts` | Level 2: prompt, `calculate` tool loop |
+| `src/lib/stats.ts` | Numbers precomputed in code for Level 2 |
+| `src/lib/types.ts` | Shared types and the allowed charge/tax types |
+| `src/app/` | Next.js web demo (`page.tsx`) and its API routes (`api/decode`, `api/ask`) |
+| `scripts/compare.ts` | Dev tool: scores a `level1.csv` against expected JSON (`npm run compare`) |
+| `scripts/test-api.mjs` | Checks the API key with one call |
+
+## Environment variables
+
+| Variable | Value |
+|---|---|
+| `MODEL_PROVIDER` | `google` |
+| `MODEL_NAME` | `gemini-3.5-flash-lite` |
+| `API_KEY` | Google AI Studio API key (secret, not included) |
+| `MIN_REQUEST_GAP_MS` | Optional, default `4500` (keeps under 15 requests/min) |
+
+## AI usage
+
+- **Models used by the solution:** Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`), for reading the bill images
+  (Level 1) and writing the answers (Level 2). No other model is called.
+- **APIs:** Google Gemini API (Google AI Studio) through the official `@google/genai` SDK.
+- **Services:** none (no OCR services, invoice/receipt extraction services, or Azure services).
+- **Local OCR libraries:** none.
+- **AI tools used to write the code:** Claude Code (Anthropic, Claude Opus 5.5) was used as a coding
+  assistant to write and review the code.

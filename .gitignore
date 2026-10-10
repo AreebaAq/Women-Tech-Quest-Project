@@ -44,3 +44,4 @@ next-env.d.ts
 # decode cache and scratch runs
 /output/cache/
 /output/*/cache/
+submission.zip
