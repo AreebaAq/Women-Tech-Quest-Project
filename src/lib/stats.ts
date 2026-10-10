@@ -141,6 +141,18 @@ export function computeStats(l1: Level1, f: BillFacts) {
       same_month_last_year_units: nextMonth.same_month_last_year ? label(nextMonth.same_month_last_year) : "not shown on the bill",
       average_last_12_months_including_this_bill: avg(timeline.slice(-12).map((t) => t.units)),
       average_last_3_months_including_this_bill: avg(last3.map((t) => t.units)),
+      best_estimate: (() => {
+        const recent = avg(last3.map((t) => t.units));
+        const seasonal = nextMonth.same_month_last_year?.units ?? null;
+        if (recent !== null && seasonal !== null) {
+          return {
+            units: Math.round((recent + seasonal) / 2),
+            method: `average of the same month last year (${seasonal} units) and the last 3 months' average (${recent} units)`,
+          };
+        }
+        const yearly = avg(timeline.slice(-12).map((t) => t.units));
+        return yearly !== null ? { units: Math.round(yearly), method: "average of the last 12 months" } : null;
+      })(),
     },
   };
 

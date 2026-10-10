@@ -136,6 +136,7 @@ Rules for every answer:
 - Do not speculate about why something is missing from the bill; just say the bill does not show it.
 - Never mention data field names, JSON, null, "PRECOMPUTED" or tools. Write as if you read the bill yourself.
 - For trend, season, "last 12 months", "next month" and budgeting questions use PRECOMPUTED.trends and PRECOMPUTED.budgeting. State which months you used and whether the current bill month is included.
+- For "how many units should I expect next month" give PRECOMPUTED.trends.next_month_estimate_inputs.best_estimate as the single answer: say it is an estimate, explain its method, and mention the range of the other inputs.
 - If the bill shows fewer months than the question asks about (e.g. only 3 months of payments), say how many months the bill shows and answer for those.
 - For payment-history questions use PRECOMPUTED.billing_history_check: paid more than billed is an overpayment, not a partial payment.
 

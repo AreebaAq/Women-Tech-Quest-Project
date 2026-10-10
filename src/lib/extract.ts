@@ -132,6 +132,11 @@ Rules:
   FPA of Rs 471 for July 2026 consumption); "Total FPA"; the late payment surcharge amounts (e.g. "L.P Surcharge 339 / 678",
   "Late Payment Surcharge (5%) 724.07", "(10%) 1448.13"); the printed energy/taxes percentage split; any message board text in English.
 - billing_history: read EVERY row of the payment history (LESCO/IESCO print 12 months in two halves; K-Electric prints 3).
+  When one table has MONTH, UNITS, BILL and PAYMENT columns (e.g. the older LESCO layout with the history at the top right),
+  use it for BOTH usage_history (units) and billing_history (bill, payment).
+- In a two-half history table the FIRST row of EACH half can be printed over the column header
+  (e.g. "AUG 25 721 80594 80594" over "MONTH STATUS UNITS BILL", and "Feb 26 175 6844 0" over the right header).
+  Include both, and keep every month's units, bill and payment on the same row.
 - usage_history: read every bar/row of the month-wise units history, oldest first, excluding the current month.
   It normally covers the 12 months before the bill month. The first row is sometimes printed over the table header
   (e.g. "JUL 25  781  35,552" overlapping "MONTH STATUS UNITS BILL"); include it. Keep negative units negative (net metering).
@@ -226,6 +231,9 @@ function cleanFacts(raw: Partial<BillFacts>): BillFacts {
 // Subtotal rows sometimes come back as lines; they belong in total_charges / total_taxes.
 const SUBTOTAL_LABEL = /net electricity charges|sub-?total|^total charges$|^electricity charges$|electricity charges for current month|^taxes and duties$/i;
 
+// LESCO/IESCO right-hand column items: shown next to the charges but never charge lines.
+const RIGHT_COLUMN_LABEL = /^\s*(total fpa|arrears?|installment|adjustments?|w\.?\s?e\.? credit|lock open credit|deferred amount|outstanding install)/i;
+
 const close = (a: number, b: number) => Math.abs(a - b) <= 1;
 const sum = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
 
@@ -237,6 +245,25 @@ function dropSubtotalLines(lines: BillLine[], total: number | null, subtotals: n
   if (total === null || close(sum(lines.map((l) => l.amount!)), total)) return lines;
   const filtered = lines.filter((l) => !subtotals.some((s) => close(l.amount!, s)));
   return filtered.length && close(sum(filtered.map((l) => l.amount!)), total) ? filtered : lines;
+}
+
+/** True when a and b have the same digits except exactly one (e.g. 3516 vs 8516). */
+function oneDigitApart(a: number, b: number) {
+  const x = a.toFixed(2);
+  const y = b.toFixed(2);
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) diff++;
+  return diff === 1;
+}
+
+function repairOneDigit(charges: number | null, taxes: number | null, bill: number | null) {
+  if (charges === null || taxes === null || bill === null || close(charges + taxes, bill)) return { charges, taxes };
+  const taxFix = Math.round((bill - charges) * 100) / 100;
+  if (oneDigitApart(taxes, taxFix)) return { charges, taxes: taxFix };
+  const chargeFix = Math.round((bill - taxes) * 100) / 100;
+  if (oneDigitApart(charges, chargeFix)) return { charges: chargeFix, taxes };
+  return { charges, taxes };
 }
 
 /** Builds the Level 1 JSON in the exact field order from the guide. */
@@ -260,7 +287,7 @@ export function toLevel1(billId: string, f: BillFacts): Level1 {
   const subtotals = [totalCharges, totalTaxes, f.current_bill].filter((x): x is number => x !== null);
   taxLines = dropSubtotalLines(taxLines, totalTaxes, subtotals);
   const chargeLines = dropSubtotalLines(
-    kept.filter((l) => l.section === "charges" && l !== subtotal),
+    kept.filter((l) => l.section === "charges" && l !== subtotal && !RIGHT_COLUMN_LABEL.test(l.label)),
     totalCharges,
     subtotals,
   );
@@ -290,6 +317,12 @@ export function toLevel1(billId: string, f: BillFacts): Level1 {
       currReading = null;
     }
   }
+
+  // A single misread digit (smudge, handwriting over the print) shows up as charges + taxes != current bill.
+  // If changing exactly one digit of one printed total makes them add up, that total was misread.
+  const totals = repairOneDigit(totalCharges, totalTaxes, f.current_bill);
+  totalCharges = totals.charges;
+  totalTaxes = totals.taxes;
 
   // A dropped "CR" shows up as a payable amount equal to minus (current bill + arrears).
   let payableWithin = f.payable_within_due_date;
@@ -364,6 +397,63 @@ async function readBill(image: Buffer, mimeType: string, feedback?: string): Pro
   return cleanFacts(parseJson<Partial<BillFacts>>(response.text));
 }
 
+const shiftMonth = (ym: string, by: number) => {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + by, 1));
+  return d.toISOString().slice(0, 7);
+};
+
+/**
+ * The history normally covers the 12 months before the bill month. If some are missing (a row hidden
+ * under the table header on a photo), ask the model for exactly those months in one focused call.
+ */
+async function fillMissingHistory(image: Buffer, mimeType: string, facts: BillFacts): Promise<BillFacts> {
+  if (!facts.bill_month || facts.usage_history.length >= 12 || facts.usage_history.length === 0) return facts;
+  const expected = Array.from({ length: 12 }, (_, i) => shiftMonth(facts.bill_month!, i - 12));
+  const have = new Set(facts.usage_history.map((h) => h.month));
+  const missing = expected.filter((m) => !have.has(m));
+  if (!missing.length) return facts;
+
+  const schema: Schema = {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        month: { type: Type.STRING, description: "YYYY-MM" },
+        units: num,
+        billed_amount: num,
+        payment_amount: num,
+      },
+      required: ["month", "units"],
+    },
+  };
+  const prompt =
+    `In this electricity bill's month-wise history table, find the rows for these months: ${missing.join(", ")}.\n` +
+    `A row may be printed over the table's column header (e.g. "AUG 25 721 80594 80594" overlapping "MONTH STATUS UNITS BILL PAYMENT"). ` +
+    `Return month (YYYY-MM), units, billed amount and payment as printed. Use null for any value you cannot read; leave out months that are not printed.`;
+  try {
+    const response = await generate(
+      [{ role: "user", parts: [{ inlineData: { data: image.toString("base64"), mimeType } }, { text: prompt }] }],
+      { responseMimeType: "application/json", responseSchema: schema, mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH },
+    );
+    const rows = (parseJson<{ month?: string; units?: unknown; billed_amount?: unknown; payment_amount?: unknown }[]>(response.text) ?? [])
+      .map((r) => ({ month: toMonth(r.month) ?? "", units: toNumber(r.units), billed: toNumber(r.billed_amount), paid: toNumber(r.payment_amount) }))
+      .filter((r) => missing.includes(r.month) && r.units !== null);
+    if (!rows.length) return facts;
+    const usage = [...facts.usage_history, ...rows.map((r) => ({ month: r.month, units: r.units }))].sort((a, b) => a.month.localeCompare(b.month));
+    const billing = [...facts.billing_history];
+    for (const r of rows) {
+      if (!billing.some((b) => b.month === r.month) && (r.billed !== null || r.paid !== null)) {
+        billing.push({ month: r.month, billed_amount: r.billed, payment_amount: r.paid, payment_date: null });
+      }
+    }
+    billing.sort((a, b) => a.month.localeCompare(b.month));
+    return { ...facts, usage_history: usage, billing_history: billing };
+  } catch {
+    return facts;
+  }
+}
+
 interface Reading {
   facts: BillFacts;
   level1: Level1;
@@ -420,7 +510,8 @@ export async function decodeBill(billId: string, image: Buffer, mimeType: string
   // Keep the facts (used for Level 2) from the reading that agrees most with the vote.
   const agreement = (r: Reading) =>
     Object.keys(level1).filter((k) => key((r.level1 as never)[k]) === key((level1 as never)[k])).length;
-  const facts = [...readings].sort((a, b) => agreement(b) - agreement(a))[0].facts;
+  const best = [...readings].sort((a, b) => agreement(b) - agreement(a))[0].facts;
+  const facts = await fillMissingHistory(image, mimeType, best);
   return { billId, level1, facts, warnings: checkConsistency(level1, facts) };
 }
 

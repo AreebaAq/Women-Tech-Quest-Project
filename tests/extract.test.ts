@@ -148,3 +148,23 @@ test("late payment schedule turns printed labels into date ranges", () => {
     ["2026-09-15 to onwards", 45263],
   ]);
 });
+
+test("a single misread digit in a total is repaired; real differences are kept", () => {
+  const smudged = toLevel1("IESCO_0002", facts({ total_charges: 29807, total_taxes: 3516, current_bill: 38323 }));
+  assert.equal(smudged.total_taxes, 8516);
+  const real = toLevel1("LESCO_0008", facts({ total_charges: 1601.56, total_taxes: 308.44, current_bill: 1678.5 }));
+  assert.equal(real.total_taxes, 308.44);
+  assert.equal(real.total_charges, 1601.56);
+});
+
+test("right-column items like Total FPA are never charge lines", () => {
+  const l1 = toLevel1("IESCO_0005", facts({
+    lines: [
+      line("Total Electricity Charges", "charges", "energy", 7711),
+      line("Subsidies", "charges", "subsidy", -1002),
+      line("Total FPA", "charges", "fpa", 599),
+    ],
+    total_charges: 6709,
+  }));
+  assert.deepEqual(l1.charges, [{ type: "energy", amount: 7711 }, { type: "subsidy", amount: -1002 }]);
+});
